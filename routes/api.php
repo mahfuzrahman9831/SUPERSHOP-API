@@ -2,6 +2,12 @@
 
 use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\Api\Auth\AuthController;
+use App\Http\Controllers\Api\BrandController;
+use App\Http\Controllers\Api\CategoryController;
+use App\Http\Controllers\Api\UnitController;
+use App\Http\Controllers\Api\TaxRateController;
+use App\Http\Controllers\Api\ProductController;
+use App\Http\Controllers\Api\ProductBundleController;
 
 Route::prefix('v1')->group(function () {
 
@@ -15,8 +21,25 @@ Route::prefix('v1')->group(function () {
     // Protected Routes
     Route::middleware('auth:sanctum')->group(function () {
 
-        // Dashboard (পরে যোগ হবে)
-        // Route::get('dashboard', [DashboardController::class, 'index']);
+        // Products
+        Route::get('products/search', [ProductController::class, 'search']);
+        Route::get('products/low-stock', [ProductController::class, 'lowStock']);
+        Route::apiResource('products', ProductController::class);
+
+        // Brands
+        Route::apiResource('brands', BrandController::class);
+
+        // Categories
+        Route::apiResource('categories', CategoryController::class);
+
+        // Units
+        Route::apiResource('units', UnitController::class);
+
+        // Tax Rates
+        Route::apiResource('tax-rates', TaxRateController::class);
+
+        // Product Bundles
+        Route::apiResource('product-bundles', ProductBundleController::class);
 
     });
 
