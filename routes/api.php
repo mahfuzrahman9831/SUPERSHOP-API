@@ -8,6 +8,8 @@ use App\Http\Controllers\Api\UnitController;
 use App\Http\Controllers\Api\TaxRateController;
 use App\Http\Controllers\Api\ProductController;
 use App\Http\Controllers\Api\ProductBundleController;
+use App\Http\Controllers\Api\StockController;
+use App\Http\Controllers\Api\WarehouseController;
 
 Route::prefix('v1')->group(function () {
 
@@ -40,6 +42,20 @@ Route::prefix('v1')->group(function () {
 
         // Product Bundles
         Route::apiResource('product-bundles', ProductBundleController::class);
+
+        // Warehouses
+        Route::get('warehouses/{warehouse}/stocks', [WarehouseController::class, 'stocks']);
+        Route::apiResource('warehouses', WarehouseController::class);
+
+        // Stock
+        Route::post('stock/opening', [StockController::class, 'opening']);
+        Route::post('stock/adjust', [StockController::class, 'adjust']);
+        Route::get('stock/movements', [StockController::class, 'movements']);
+        Route::get('stock/valuation', [StockController::class, 'valuation']);
+        Route::get('stock/layers', [StockController::class, 'layers']);
+        Route::post('stock/damage', [StockController::class, 'damage']);
+        Route::post('stock/transfers', [StockController::class, 'transfer']);
+        Route::get('stock/transfers/{stockTransfer}', [StockController::class, 'transferShow']);
 
     });
 
