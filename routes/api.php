@@ -10,6 +10,9 @@ use App\Http\Controllers\Api\ProductController;
 use App\Http\Controllers\Api\ProductBundleController;
 use App\Http\Controllers\Api\StockController;
 use App\Http\Controllers\Api\WarehouseController;
+use App\Http\Controllers\Api\SupplierController;
+use App\Http\Controllers\Api\PurchaseController;
+use App\Http\Controllers\Api\PurchaseReturnController;
 
 Route::prefix('v1')->group(function () {
 
@@ -56,6 +59,17 @@ Route::prefix('v1')->group(function () {
         Route::post('stock/damage', [StockController::class, 'damage']);
         Route::post('stock/transfers', [StockController::class, 'transfer']);
         Route::get('stock/transfers/{stockTransfer}', [StockController::class, 'transferShow']);
+
+        // Suppliers
+        Route::get('suppliers/{supplier}/ledger', [SupplierController::class, 'ledger']);
+        Route::apiResource('suppliers', SupplierController::class);
+
+        // Purchases
+        Route::post('purchases/{purchase}/payment', [PurchaseController::class, 'payment']);
+        Route::apiResource('purchases', PurchaseController::class);
+
+        // Purchase Returns
+        Route::apiResource('purchase-returns', PurchaseReturnController::class)->only(['index', 'store', 'show']);
 
     });
 
