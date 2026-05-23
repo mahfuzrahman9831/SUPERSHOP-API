@@ -7,16 +7,16 @@ use Illuminate\Support\Facades\DB;
 
 class InvoiceService
 {
-    public function generate(string $type): string
+    public function generate(string $module): string
     {
-        return DB::transaction(function () use ($type) {
-            $counter = InvoiceCounter::where('type', $type)
+        return DB::transaction(function () use ($module) {
+            $counter = InvoiceCounter::where('module', $module)  // 'type' → 'module'
                 ->lockForUpdate()
                 ->firstOrFail();
 
-            $number = $counter->last_number + 1;
+            $number = $counter->current_number + 1;             // 'last_number' → 'current_number'
 
-            $counter->update(['last_number' => $number]);
+            $counter->update(['current_number' => $number]);    // 'last_number' → 'current_number'
 
             return $counter->prefix . str_pad($number, 6, '0', STR_PAD_LEFT);
         });

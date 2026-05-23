@@ -15,22 +15,22 @@ class SaleController extends Controller
 {
     public function __construct(protected SaleService $saleService) {}
 
-    // GET /api/sales
+    // GET /api/v1/sales
     public function index(Request $request): JsonResponse
     {
         $sales = Sale::with(['customer', 'user'])
-            ->when($request->from,        fn($q) => $q->whereDate('sale_date', '>=', $request->from))
-            ->when($request->to,          fn($q) => $q->whereDate('sale_date', '<=', $request->to))
+            ->when($request->from,        fn($q) => $q->whereDate('created_at', '>=', $request->from))
+            ->when($request->to,          fn($q) => $q->whereDate('created_at', '<=', $request->to))
             ->when($request->customer_id, fn($q) => $q->where('customer_id', $request->customer_id))
-            ->when($request->status,      fn($q) => $q->where('sale_status', $request->status))
-            ->when($request->search,      fn($q) => $q->where('invoice_number', 'like', "%{$request->search}%"))
-            ->latest('sale_date')
+            ->when($request->status,      fn($q) => $q->where('status', $request->status))
+            ->when($request->search,      fn($q) => $q->where('invoice_no', 'like', "%{$request->search}%"))
+            ->latest()
             ->paginate($request->per_page ?? 20);
 
         return $this->success($sales);
     }
 
-    // POST /api/sales
+    // POST /api/v1/sales
     public function store(CreateSaleRequest $request): JsonResponse
     {
         try {
@@ -41,13 +41,13 @@ class SaleController extends Controller
         }
     }
 
-    // GET /api/sales/{id}
+    // GET /api/v1/sales/{id}
     public function show(int $id): JsonResponse
     {
         $sale = Sale::with([
             'items.product',
             'items.variant',
-            'items.layers.stockLayer',
+            'items.layers',
             'payments.method',
             'customer',
             'user',
@@ -57,7 +57,37 @@ class SaleController extends Controller
         return $this->success($sale);
     }
 
-    // POST /api/sales/{id}/payment
+    // PUT /api/v1/sales/{id}
+    public function update(Request $request, int $id): JsonResponse
+    {
+        $sale = Sale::findOrFail($id);
+
+        if ($sale->status !== 'draft') {
+            return $this->error('শুধুমাত্র draft sale update করা যাবে।', 422);
+        }
+
+        $sale->update([
+            'note' => $request->note ?? $sale->note,
+        ]);
+
+        return $this->success($sale, 'Sale update হয়েছে।');
+    }
+
+    // DELETE /api/v1/sales/{id}
+    public function destroy(int $id): JsonResponse
+    {
+        $sale = Sale::findOrFail($id);
+
+        if ($sale->status === 'completed') {
+            return $this->error('Completed sale delete করা যাবে না। Cancel করুন।', 422);
+        }
+
+        $sale->delete();
+
+        return $this->success(null, 'Sale মুছে ফেলা হয়েছে।');
+    }
+
+    // POST /api/v1/sales/{id}/payment
     public function collectDue(CollectDueRequest $request, int $id): JsonResponse
     {
         try {
@@ -68,7 +98,7 @@ class SaleController extends Controller
         }
     }
 
-    // POST /api/sales/{id}/cancel
+    // POST /api/v1/sales/{id}/cancel
     public function cancel(Request $request, int $id): JsonResponse
     {
         try {
@@ -79,7 +109,7 @@ class SaleController extends Controller
         }
     }
 
-    // GET /api/sales/{id}/invoice
+    // GET /api/v1/sales/{id}/invoice
     public function invoice(int $id): JsonResponse
     {
         $sale = Sale::with([
@@ -93,7 +123,7 @@ class SaleController extends Controller
         return $this->success($sale);
     }
 
-    // GET /api/sales/{id}/invoice/pdf
+    // GET /api/v1/sales/{id}/invoice/pdf
     public function invoicePdf(int $id)
     {
         $sale = Sale::with([
@@ -106,6 +136,6 @@ class SaleController extends Controller
         $pdf = app('dompdf.wrapper')
             ->loadView('invoices.sale', compact('sale'));
 
-        return $pdf->download("invoice-{$sale->invoice_number}.pdf");
+        return $pdf->download("invoice-{$sale->invoice_no}.pdf");
     }
 }

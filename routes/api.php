@@ -13,6 +13,8 @@ use App\Http\Controllers\Api\WarehouseController;
 use App\Http\Controllers\Api\SupplierController;
 use App\Http\Controllers\Api\PurchaseController;
 use App\Http\Controllers\Api\PurchaseReturnController;
+use App\Http\Controllers\Api\SaleController;
+use App\Http\Controllers\Api\HeldSaleController;
 
 Route::prefix('v1')->group(function () {
 
@@ -71,6 +73,17 @@ Route::prefix('v1')->group(function () {
         // Purchase Returns
         Route::apiResource('purchase-returns', PurchaseReturnController::class)->only(['index', 'store', 'show']);
 
+
+        // Sales
+        Route::get('sales/{id}/invoice/pdf', [SaleController::class, 'invoicePdf']);
+        Route::get('sales/{id}/invoice',     [SaleController::class, 'invoice']);
+        Route::post('sales/{id}/payment',    [SaleController::class, 'collectDue']);
+        Route::post('sales/{id}/cancel',     [SaleController::class, 'cancel']);
+        Route::apiResource('sales', SaleController::class);
+
+        // Held Sales
+        Route::get('held-sales/{id}/resume', [HeldSaleController::class, 'resume']);
+        Route::apiResource('held-sales', HeldSaleController::class)->except(['update', 'show']);
     });
 
 });

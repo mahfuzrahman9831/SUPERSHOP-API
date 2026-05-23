@@ -7,13 +7,10 @@ use App\Models\SaleItem;
 use App\Models\SaleItemLayer;
 use App\Models\ProductStockLayer;
 use App\Models\StockMovement;
-use App\Models\Payment;
+use App\Models\StockMovementType;
 use App\Models\Customer;
 use App\Models\LoyaltyPoint;
 use App\Models\HeldSale;
-use App\Services\FIFOAllocationService;
-use App\Services\InvoiceService;
-use App\Services\PaymentService;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Auth;
 use Carbon\Carbon;
@@ -22,119 +19,134 @@ class SaleService
 {
     public function __construct(
         protected FIFOAllocationService $fifoService,
-        protected InvoiceService $invoiceService,
-        protected PaymentService $paymentService,
+        protected InvoiceService        $invoiceService,
+        protected PaymentService        $paymentService,
     ) {}
 
-    /**
-     * সম্পূর্ণ Sale তৈরি — FIFO + Stock + Payment + Loyalty
-     */
+    // ─── Sale Create ─────────────────────────────────────────────────────────
+
     public function createSale(array $data): Sale
     {
         return DB::transaction(function () use ($data) {
 
-            // 1. Invoice Number Generate
-            $invoiceNumber = $this->invoiceService->generate('sale');
+            // Invoice Number
+            $invoiceNo = $this->invoiceService->generate('sale');
 
-            // 2. Totals Calculate
-            $subtotal     = 0;
-            $totalTax     = 0;
-            $totalDiscount = $data['discount_amount'] ?? 0;
+            // Movement Type ID (sale = out)
+            $movementTypeId = StockMovementType::where('name', 'sale')->value('id');
+
+            // Totals
+            $subtotal       = 0;
+            $totalTax       = 0;
+            $totalDiscount  = (float)($data['discount_amount'] ?? 0);
+            $totalProfit    = 0;
 
             foreach ($data['items'] as $item) {
-                $subtotal  += $item['unit_price'] * $item['quantity'];
-                $totalTax  += $item['tax_amount'] ?? 0;
+                $qty        = (float)$item['quantity'];
+                $price      = (float)$item['unit_price'];
+                $cost       = (float)($item['cost_price'] ?? 0);
+                $subtotal  += $qty * $price;
+                $totalTax  += (float)($item['tax_amount'] ?? 0);
+                $totalProfit += ($price - $cost) * $qty;
             }
 
             $grandTotal = $subtotal + $totalTax - $totalDiscount;
             $paidAmount = collect($data['payments'] ?? [])->sum('amount');
             $dueAmount  = max(0, $grandTotal - $paidAmount);
 
-            // 3. Sale Record Insert
+            // ── Sale Insert ──
             $sale = Sale::create([
-                'invoice_number'  => $invoiceNumber,
-                'sale_date'       => $data['sale_date'] ?? Carbon::now(),
-                'customer_id'     => $data['customer_id'] ?? null,
-                'warehouse_id'    => $data['warehouse_id'],
-                'user_id'         => Auth::id(),
-                'shift_id'        => $data['shift_id'] ?? null,
-                'subtotal'        => $subtotal,
-                'tax_amount'      => $totalTax,
-                'discount_amount' => $totalDiscount,
-                'discount_type'   => $data['discount_type'] ?? 'fixed',
-                'grand_total'     => $grandTotal,
-                'paid_amount'     => $paidAmount,
-                'due_amount'      => $dueAmount,
-                'payment_status'  => $this->resolvePaymentStatus($grandTotal, $paidAmount),
-                'sale_status'     => 'completed',
-                'notes'           => $data['notes'] ?? null,
+                'invoice_no'     => $invoiceNo,
+                'customer_id'    => $data['customer_id'] ?? null,
+                'warehouse_id'   => $data['warehouse_id'],
+                'user_id'        => Auth::id(),
+                'shift_id'       => $data['shift_id'] ?? null,
+                'subtotal'       => $subtotal,
+                'discount'       => $totalDiscount,
+                'tax'            => $totalTax,
+                'total_amount'   => $grandTotal,
+                'paid_amount'    => $paidAmount,
+                'due_amount'     => $dueAmount,
+                'profit'         => $totalProfit,
+                'payment_status' => $this->resolvePaymentStatus($grandTotal, $paidAmount),
+                'status'         => 'completed',
+                'note'           => $data['note'] ?? null,
             ]);
 
-            // 4. Items + FIFO Allocation
+            // ── Items + FIFO + Stock Movement ──
             foreach ($data['items'] as $itemData) {
+                $qty   = (float)$itemData['quantity'];
+                $price = (float)$itemData['unit_price'];
+                $cost  = (float)($itemData['cost_price'] ?? 0);
+                $tax   = (float)($itemData['tax_amount'] ?? 0);
+                $disc  = (float)($itemData['discount_amount'] ?? 0);
+                $total = ($qty * $price) + $tax - $disc;
+                $profit = ($price - $cost) * $qty;
+
                 $saleItem = SaleItem::create([
-                    'sale_id'        => $sale->id,
-                    'product_id'     => $itemData['product_id'],
-                    'variant_id'     => $itemData['variant_id'] ?? null,
-                    'quantity'       => $itemData['quantity'],
-                    'unit_price'     => $itemData['unit_price'],
-                    'cost_price'     => $itemData['cost_price'] ?? 0,
-                    'tax_amount'     => $itemData['tax_amount'] ?? 0,
-                    'discount_amount'=> $itemData['discount_amount'] ?? 0,
-                    'subtotal'       => $itemData['unit_price'] * $itemData['quantity'],
+                    'sale_id'       => $sale->id,
+                    'product_id'    => $itemData['product_id'],
+                    'variant_id'    => $itemData['variant_id'] ?? null,
+                    'tax_rate_id'   => $itemData['tax_rate_id'] ?? null,
+                    'quantity'      => $qty,
+                    'selling_price' => $price,
+                    'cost_price'    => $cost,
+                    'discount'      => $disc,
+                    'tax'           => $tax,
+                    'profit'        => $profit,
+                    'total'         => $total,
                 ]);
 
-                // FIFO Layer থেকে Stock কাটো
+                // FIFO Allocation
                 $layers = $this->fifoService->allocate(
                     productId:   $itemData['product_id'],
                     warehouseId: $data['warehouse_id'],
-                    quantity:    $itemData['quantity'],
+                    quantity:    $qty,
                     variantId:   $itemData['variant_id'] ?? null,
                 );
 
                 foreach ($layers as $layer) {
                     SaleItemLayer::create([
-                        'sale_item_id'         => $saleItem->id,
-                        'product_stock_layer_id'=> $layer['layer_id'],
-                        'quantity'             => $layer['quantity'],
-                        'cost_price'           => $layer['cost_price'],
+                        'sale_item_id'   => $saleItem->id,
+                        'stock_layer_id' => $layer['layer_id'],   // product_stock_layer_id → stock_layer_id
+                        'quantity'       => $layer['quantity'],
+                        'cost_price'     => $layer['cost_price'],
+                        'total_cost'     => $layer['quantity'] * $layer['cost_price'],
                     ]);
                 }
 
-                // Stock Movement Insert
+                // Stock Movement
                 StockMovement::create([
-                    'product_id'   => $itemData['product_id'],
-                    'variant_id'   => $itemData['variant_id'] ?? null,
-                    'warehouse_id' => $data['warehouse_id'],
-                    'movement_type'=> 'sale',
-                    'reference_type'=> Sale::class,
-                    'reference_id' => $sale->id,
-                    'quantity'     => -$itemData['quantity'],
-                    'notes'        => "Sale: {$invoiceNumber}",
-                    'created_by'   => Auth::id(),
+                    'product_id'       => $itemData['product_id'],
+                    'warehouse_id'     => $data['warehouse_id'],
+                    'movement_type_id' => $movementTypeId,         // 'movement_type' string না, FK id
+                    'quantity'         => $qty,
+                    'reference_type'   => 'sale',
+                    'reference_id'     => $sale->id,
+                    'note'             => "Sale: {$invoiceNo}",
+                    'created_by'       => Auth::id(),
                 ]);
             }
 
-            // 5. Payments Insert
-            if (!empty($data['payments'])) {
-                foreach ($data['payments'] as $paymentData) {
-                    $this->paymentService->create([
-                        'payable_type'      => Sale::class,
-                        'payable_id'        => $sale->id,
-                        'payment_method_id' => $paymentData['payment_method_id'],
-                        'amount'            => $paymentData['amount'],
-                        'reference'         => $paymentData['reference'] ?? null,
-                        'paid_at'           => Carbon::now(),
-                        'created_by'        => Auth::id(),
-                    ]);
-                }
+            // ── Payments ──
+            foreach ($data['payments'] ?? [] as $paymentData) {
+                $this->paymentService->create([
+                    'payable_type'      => 'sale',
+                    'payable_id'        => $sale->id,
+                    'payment_method_id' => $paymentData['payment_method_id'],
+                    'amount'            => $paymentData['amount'],
+                    'reference'         => $paymentData['reference'] ?? null,
+                    'paid_at'           => Carbon::now(),
+                    'created_by'        => Auth::id(),
+                ]);
             }
 
-            // 6. Customer Due Update + Loyalty Points
+            // ── Customer Due + Loyalty ──
             if ($sale->customer_id) {
-                Customer::where('id', $sale->customer_id)
-                    ->increment('total_due', $dueAmount);
-
+                if ($dueAmount > 0) {
+                    Customer::where('id', $sale->customer_id)
+                        ->increment('total_due', $dueAmount);
+                }
                 $this->awardLoyaltyPoints($sale);
             }
 
@@ -142,77 +154,22 @@ class SaleService
         });
     }
 
-    /**
-     * Loyalty Points Award
-     */
-    protected function awardLoyaltyPoints(Sale $sale): void
-    {
-        $pointsPerTaka = setting('loyalty_points_per_taka', 0);
-        if ($pointsPerTaka <= 0) return;
+    // ─── Due Collection ──────────────────────────────────────────────────────
 
-        $points = (int) ($sale->grand_total * $pointsPerTaka);
-        if ($points <= 0) return;
-
-        LoyaltyPoint::create([
-            'customer_id' => $sale->customer_id,
-            'sale_id'     => $sale->id,
-            'points'      => $points,
-            'type'        => 'earn',
-            'note'        => "Sale {$sale->invoice_number}",
-        ]);
-
-        Customer::where('id', $sale->customer_id)
-            ->increment('loyalty_points', $points);
-    }
-
-    /**
-     * Payment Status Resolve
-     */
-    protected function resolvePaymentStatus(float $total, float $paid): string
-    {
-        if ($paid <= 0)          return 'unpaid';
-        if ($paid >= $total)     return 'paid';
-        return 'partial';
-    }
-
-    /**
-     * Sale Hold (Cart Save)
-     */
-    public function holdSale(array $data): HeldSale
-    {
-        return HeldSale::create([
-            'user_id'     => Auth::id(),
-            'shift_id'    => $data['shift_id'] ?? null,
-            'customer_id' => $data['customer_id'] ?? null,
-            'cart_data'   => json_encode($data['cart']),
-            'note'        => $data['note'] ?? null,
-        ]);
-    }
-
-    /**
-     * Held Sale Resume করে Delete
-     */
-    public function resumeHeldSale(int $heldSaleId): array
-    {
-        $held = HeldSale::findOrFail($heldSaleId);
-        $cart = json_decode($held->cart_data, true);
-        $held->delete();
-        return $cart;
-    }
-
-    /**
-     * Due Payment Collect
-     */
     public function collectDue(int $saleId, array $payments): Sale
     {
         return DB::transaction(function () use ($saleId, $payments) {
-            $sale = Sale::findOrFail($saleId);
+            $sale = Sale::lockForUpdate()->findOrFail($saleId);
+
+            if ($sale->due_amount <= 0) {
+                throw new \Exception('এই sale এ কোনো due নেই।');
+            }
 
             $totalPaying = collect($payments)->sum('amount');
 
             foreach ($payments as $paymentData) {
                 $this->paymentService->create([
-                    'payable_type'      => Sale::class,
+                    'payable_type'      => 'sale',
                     'payable_id'        => $sale->id,
                     'payment_method_id' => $paymentData['payment_method_id'],
                     'amount'            => $paymentData['amount'],
@@ -223,12 +180,12 @@ class SaleService
             }
 
             $newPaid = $sale->paid_amount + $totalPaying;
-            $newDue  = max(0, $sale->grand_total - $newPaid);
+            $newDue  = max(0, $sale->total_amount - $newPaid);
 
             $sale->update([
                 'paid_amount'    => $newPaid,
                 'due_amount'     => $newDue,
-                'payment_status' => $this->resolvePaymentStatus($sale->grand_total, $newPaid),
+                'payment_status' => $this->resolvePaymentStatus($sale->total_amount, $newPaid),
             ]);
 
             if ($sale->customer_id) {
@@ -240,50 +197,101 @@ class SaleService
         });
     }
 
-    /**
-     * Sale Cancel (Stock Restore)
-     */
+    // ─── Hold Sale ───────────────────────────────────────────────────────────
+
+    public function holdSale(array $data): HeldSale
+    {
+        return HeldSale::create([
+            'user_id'     => Auth::id(),
+            'customer_id' => $data['customer_id'] ?? null,
+            'reference'   => 'HOLD-' . time(),             // reference কলাম আছে, NOT NULL
+            'cart_data'   => $data['cart'],                 // JSON cast করবে Model
+            'note'        => $data['note'] ?? null,
+        ]);
+    }
+
+    public function resumeHeldSale(int $heldSaleId): array
+    {
+        $held = HeldSale::where('user_id', Auth::id())->findOrFail($heldSaleId);
+        $cart = is_array($held->cart_data) ? $held->cart_data : json_decode($held->cart_data, true);
+        $held->delete();
+        return $cart;
+    }
+
+    // ─── Cancel Sale ─────────────────────────────────────────────────────────
+
     public function cancelSale(int $saleId, string $reason = ''): Sale
     {
         return DB::transaction(function () use ($saleId, $reason) {
             $sale = Sale::with('items.layers')->findOrFail($saleId);
 
-            if ($sale->sale_status === 'cancelled') {
-                throw new \Exception('Sale already cancelled.');
+            if ($sale->status === 'cancelled') {
+                throw new \Exception('Sale ইতিমধ্যে cancelled।');
             }
 
-            // Stock Layer Restore
+            $movementTypeId = StockMovementType::where('name', 'sale_return')->value('id')
+                           ?? StockMovementType::where('name', 'adjustment')->value('id');
+
             foreach ($sale->items as $item) {
+                // Stock Layer Restore
                 foreach ($item->layers as $layer) {
-                    ProductStockLayer::where('id', $layer->product_stock_layer_id)
+                    ProductStockLayer::where('id', $layer->stock_layer_id)
                         ->increment('quantity_remaining', $layer->quantity);
                 }
 
                 StockMovement::create([
-                    'product_id'    => $item->product_id,
-                    'variant_id'    => $item->variant_id,
-                    'warehouse_id'  => $sale->warehouse_id,
-                    'movement_type' => 'sale_cancel',
-                    'reference_type'=> Sale::class,
-                    'reference_id'  => $sale->id,
-                    'quantity'      => $item->quantity,
-                    'notes'         => "Cancel: {$sale->invoice_number}. {$reason}",
-                    'created_by'    => Auth::id(),
+                    'product_id'       => $item->product_id,
+                    'warehouse_id'     => $sale->warehouse_id,
+                    'movement_type_id' => $movementTypeId,
+                    'quantity'         => $item->quantity,
+                    'reference_type'   => 'sale_cancel',
+                    'reference_id'     => $sale->id,
+                    'note'             => "Cancel: {$sale->invoice_no}. {$reason}",
+                    'created_by'       => Auth::id(),
                 ]);
             }
 
-            // Customer Due Restore
             if ($sale->customer_id && $sale->due_amount > 0) {
                 Customer::where('id', $sale->customer_id)
                     ->decrement('total_due', $sale->due_amount);
             }
 
             $sale->update([
-                'sale_status' => 'cancelled',
-                'notes'       => $sale->notes . " | Cancelled: {$reason}",
+                'status' => 'cancelled',
+                'note'   => trim($sale->note . " | Cancelled: {$reason}"),
             ]);
 
             return $sale->fresh();
         });
+    }
+
+    // ─── Helpers ─────────────────────────────────────────────────────────────
+
+    protected function awardLoyaltyPoints(Sale $sale): void
+    {
+        $pointsPerTaka = (float) setting('loyalty_points_per_taka', 0);
+        if ($pointsPerTaka <= 0) return;
+
+        $points = (int)($sale->total_amount * $pointsPerTaka);
+        if ($points <= 0) return;
+
+        LoyaltyPoint::create([
+            'customer_id'    => $sale->customer_id,
+            'type'           => 'earn',
+            'points'         => $points,
+            'reference_type' => 'sale',
+            'reference_id'   => $sale->id,
+            'note'           => "Sale {$sale->invoice_no}",
+        ]);
+
+        Customer::where('id', $sale->customer_id)
+            ->increment('loyalty_points', $points);
+    }
+
+    protected function resolvePaymentStatus(float $total, float $paid): string
+    {
+        if ($paid <= 0)      return 'unpaid';
+        if ($paid >= $total) return 'paid';
+        return 'partial';
     }
 }
