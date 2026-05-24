@@ -15,6 +15,7 @@ use App\Http\Controllers\Api\PurchaseController;
 use App\Http\Controllers\Api\PurchaseReturnController;
 use App\Http\Controllers\Api\SaleController;
 use App\Http\Controllers\Api\HeldSaleController;
+use App\Http\Controllers\Api\SaleReturnController;
 
 Route::prefix('v1')->group(function () {
 
@@ -84,6 +85,12 @@ Route::prefix('v1')->group(function () {
         // Held Sales
         Route::get('held-sales/{id}/resume', [HeldSaleController::class, 'resume']);
         Route::apiResource('held-sales', HeldSaleController::class)->except(['update', 'show']);
-    });
+    
+        // Sale Returns
+        Route::post('sale-returns/{saleReturn}/approve', [SaleReturnController::class, 'approve']);
+        Route::apiResource('sale-returns', SaleReturnController::class)->only(['index', 'store', 'show']);
+    
+    
+        });
 
 });
