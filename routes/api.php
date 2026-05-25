@@ -16,6 +16,8 @@ use App\Http\Controllers\Api\PurchaseReturnController;
 use App\Http\Controllers\Api\SaleController;
 use App\Http\Controllers\Api\HeldSaleController;
 use App\Http\Controllers\Api\SaleReturnController;
+use App\Http\Controllers\Api\CustomerController;
+use App\Http\Controllers\Api\CustomerGroupController;
 
 Route::prefix('v1')->group(function () {
 
@@ -90,6 +92,17 @@ Route::prefix('v1')->group(function () {
         Route::post('sale-returns/{saleReturn}/approve', [SaleReturnController::class, 'approve']);
         Route::apiResource('sale-returns', SaleReturnController::class)->only(['index', 'store', 'show']);
     
+        // Customers
+            Route::get('customers/{customer}/ledger', [CustomerController::class, 'ledger']);
+            Route::post('customers/{customer}/payment', [CustomerController::class, 'payment']);
+            Route::get('customers/{customer}/loyalty', [CustomerController::class, 'loyalty']);
+            Route::post('customers/{customer}/loyalty/redeem', [CustomerController::class, 'redeemLoyalty']);
+            Route::post('customers/{customer}/toggle-vip', [CustomerController::class, 'toggleVip']);
+            Route::post('customers/{customer}/toggle-blacklist', [CustomerController::class, 'toggleBlacklist']);
+            Route::apiResource('customers', CustomerController::class);
+
+            // Customer Groups
+            Route::apiResource('customer-groups', CustomerGroupController::class);
     
         });
 
