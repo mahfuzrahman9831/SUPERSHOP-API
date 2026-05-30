@@ -18,6 +18,10 @@ use App\Http\Controllers\Api\HeldSaleController;
 use App\Http\Controllers\Api\SaleReturnController;
 use App\Http\Controllers\Api\CustomerController;
 use App\Http\Controllers\Api\CustomerGroupController;
+use App\Http\Controllers\Api\ExpenseCategoryController;
+use App\Http\Controllers\Api\ExpenseController;
+use App\Http\Controllers\Api\RecurringExpenseController;
+use App\Http\Controllers\Api\ShiftController;
 
 Route::prefix('v1')->group(function () {
 
@@ -103,7 +107,24 @@ Route::prefix('v1')->group(function () {
 
             // Customer Groups
             Route::apiResource('customer-groups', CustomerGroupController::class);
-    
-        });
+
+        // Expense Categories
+            Route::apiResource('expense-categories', ExpenseCategoryController::class);
+
+            // Expenses
+            Route::post('expenses/{expense}/approve', [ExpenseController::class, 'approve']);
+            Route::apiResource('expenses', ExpenseController::class);
+
+            // Recurring Expenses
+            Route::apiResource('recurring-expenses', RecurringExpenseController::class);
+
+            // Shifts
+            Route::post('shifts/open', [ShiftController::class, 'open']);
+            Route::post('shifts/close', [ShiftController::class, 'close']);
+            Route::get('shifts/current', [ShiftController::class, 'current']);
+            Route::post('shifts/cash-in-out', [ShiftController::class, 'cashInOut']);
+            Route::get('shifts/{shift}/summary', [ShiftController::class, 'summary']);    
+                
+                    });
 
 });
