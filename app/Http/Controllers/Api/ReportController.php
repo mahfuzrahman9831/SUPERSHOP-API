@@ -1,0 +1,433 @@
+<?php
+
+namespace App\Http\Controllers\Api;
+
+use App\Models\Customer;
+use App\Models\Expense;
+use App\Models\Product;
+use App\Models\Purchase;
+use App\Models\Sale;
+use App\Models\Shift;
+use App\Models\Supplier;
+use App\Models\ProductStockLayer;
+use Barryvdh\DomPDF\Facade\Pdf;
+use Illuminate\Http\JsonResponse;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
+
+class ReportController extends ApiController
+{
+    // Dashboard Summary
+    public function dashboard(Request $request): JsonResponse
+    {
+        $today = now()->toDateString();
+
+        // Today Sales
+        $todaySales = Sale::whereDate('created_at', $today)
+            ->where('status', 'completed')
+            ->sum('total_amount');
+
+        // Today Purchase
+        $todayPurchase = Purchase::whereDate('created_at', $today)
+            ->where('status', 'completed')
+            ->sum('total_amount');
+
+        // Today Expense
+        $todayExpense = Expense::whereDate('expense_date', $today)
+            ->sum('amount');
+
+        // Today Profit
+        $todayProfit = Sale::whereDate('created_at', $today)
+            ->where('status', 'completed')
+            ->sum('profit');
+
+        // Low Stock
+        $lowStock = Product::where('is_active', true)
+            ->whereColumn('stock_quantity', '<=', 'low_stock_alert')
+            ->count();
+
+        // Total Due (Customers)
+        $customerDue = Customer::sum('total_due');
+
+        // Total Due (Suppliers)
+        $supplierDue = Supplier::sum('total_due');
+
+        // Recent Sales (last 5)
+        $recentSales = Sale::with(['customer'])
+            ->where('status', 'completed')
+            ->orderBy('created_at', 'desc')
+            ->limit(5)
+            ->get(['id', 'invoice_no', 'customer_id', 'total_amount', 'payment_status', 'created_at']);
+
+        // Monthly Overview (last 6 months)
+        $monthlyData = Sale::where('status', 'completed')
+            ->where('created_at', '>=', now()->subMonths(6))
+            ->selectRaw('DATE_FORMAT(created_at, "%Y-%m") as month, SUM(total_amount) as sales, SUM(profit) as profit')
+            ->groupBy('month')
+            ->orderBy('month')
+            ->get();
+
+        // Top Selling Products (this month)
+        $topProducts = DB::table('sale_items')
+            ->join('sales', 'sale_items.sale_id', '=', 'sales.id')
+            ->join('products', 'sale_items.product_id', '=', 'products.id')
+            ->where('sales.status', 'completed')
+            ->whereMonth('sales.created_at', now()->month)
+            ->selectRaw('products.id, products.name, SUM(sale_items.quantity) as total_qty, SUM(sale_items.total) as total_sales')
+            ->groupBy('products.id', 'products.name')
+            ->orderBy('total_qty', 'desc')
+            ->limit(5)
+            ->get();
+
+        // Current Shift
+        $currentShift = Shift::where('status', 'open')
+            ->with('user')
+            ->first();
+
+        return $this->success([
+            'today_sales'    => $todaySales,
+            'today_purchase' => $todayPurchase,
+            'today_expense'  => $todayExpense,
+            'today_profit'   => $todayProfit,
+            'low_stock'      => $lowStock,
+            'customer_due'   => $customerDue,
+            'supplier_due'   => $supplierDue,
+            'recent_sales'   => $recentSales,
+            'monthly_data'   => $monthlyData,
+            'top_products'   => $topProducts,
+            'current_shift'  => $currentShift,
+        ]);
+    }
+
+    // Sales Report
+    public function sales(Request $request): JsonResponse
+    {
+        $from = $request->from ?? now()->startOfMonth()->toDateString();
+        $to   = $request->to ?? now()->toDateString();
+
+        $sales = Sale::with(['customer', 'user'])
+            ->where('status', 'completed')
+            ->whereBetween('created_at', [$from, $to . ' 23:59:59'])
+            ->orderBy('created_at', 'desc')
+            ->get();
+
+        $summary = [
+            'total_sales'   => $sales->sum('total_amount'),
+            'total_profit'  => $sales->sum('profit'),
+            'total_paid'    => $sales->sum('paid_amount'),
+            'total_due'     => $sales->sum('due_amount'),
+            'sales_count'   => $sales->count(),
+            'from'          => $from,
+            'to'            => $to,
+        ];
+
+        return $this->success([
+            'summary' => $summary,
+            'sales'   => $sales,
+        ]);
+    }
+
+    // Profit Report (FIFO based)
+    public function profit(Request $request): JsonResponse
+    {
+        $from = $request->from ?? now()->startOfMonth()->toDateString();
+        $to   = $request->to ?? now()->toDateString();
+
+        $data = DB::table('sale_items')
+            ->join('sales', 'sale_items.sale_id', '=', 'sales.id')
+            ->join('products', 'sale_items.product_id', '=', 'products.id')
+            ->where('sales.status', 'completed')
+            ->whereBetween('sales.created_at', [$from, $to . ' 23:59:59'])
+            ->selectRaw('
+                products.id,
+                products.name,
+                SUM(sale_items.quantity) as total_qty,
+                SUM(sale_items.total) as total_revenue,
+                SUM(sale_items.cost_price * sale_items.quantity) as total_cost,
+                SUM(sale_items.profit) as total_profit
+            ')
+            ->groupBy('products.id', 'products.name')
+            ->orderBy('total_profit', 'desc')
+            ->get();
+
+        $totalRevenue = $data->sum('total_revenue');
+        $totalCost    = $data->sum('total_cost');
+        $totalProfit  = $data->sum('total_profit');
+
+        return $this->success([
+            'summary' => [
+                'total_revenue' => $totalRevenue,
+                'total_cost'    => $totalCost,
+                'total_profit'  => $totalProfit,
+                'profit_margin' => $totalRevenue > 0 ? round(($totalProfit / $totalRevenue) * 100, 2) : 0,
+                'from'          => $from,
+                'to'            => $to,
+            ],
+            'products' => $data,
+        ]);
+    }
+
+    // Stock Report
+    public function stock(Request $request): JsonResponse
+    {
+        $products = Product::with(['category', 'unit'])
+            ->where('is_active', true)
+            ->orderBy('name')
+            ->get()
+            ->map(function ($product) {
+                return [
+                    'id'             => $product->id,
+                    'name'           => $product->name,
+                    'category'       => $product->category?->name,
+                    'unit'           => $product->unit?->short_name,
+                    'stock_quantity' => $product->stock_quantity,
+                    'low_stock_alert' => $product->low_stock_alert,
+                    'is_low_stock'   => $product->stock_quantity <= $product->low_stock_alert,
+                    'selling_price'  => $product->default_selling_price,
+                    'purchase_price' => $product->last_purchase_price,
+                ];
+            });
+
+        return $this->success([
+            'total_products' => $products->count(),
+            'low_stock'      => $products->where('is_low_stock', true)->count(),
+            'out_of_stock'   => $products->where('stock_quantity', 0)->count(),
+            'products'       => $products,
+        ]);
+    }
+
+    // Stock Valuation
+    public function stockValuation(): JsonResponse
+    {
+        $layers = ProductStockLayer::with(['product.category', 'product.unit'])
+            ->where('quantity_remaining', '>', 0)
+            ->get()
+            ->groupBy('product_id')
+            ->map(function ($productLayers) {
+                $product    = $productLayers->first()->product;
+                $totalValue = $productLayers->sum(fn($l) => $l->quantity_remaining * $l->purchase_price);
+                $totalQty   = $productLayers->sum('quantity_remaining');
+
+                return [
+                    'product_id'   => $product->id,
+                    'product_name' => $product->name,
+                    'category'     => $product->category?->name,
+                    'unit'         => $product->unit?->short_name,
+                    'quantity'     => $totalQty,
+                    'stock_value'  => round($totalValue, 2),
+                    'layers'       => $productLayers->map(fn($l) => [
+                        'purchase_price'     => $l->purchase_price,
+                        'quantity_remaining' => $l->quantity_remaining,
+                        'value'              => round($l->quantity_remaining * $l->purchase_price, 2),
+                        'date'               => $l->created_at,
+                    ]),
+                ];
+            })->values();
+
+        return $this->success([
+            'total_value' => round($layers->sum('stock_value'), 2),
+            'products'    => $layers,
+        ]);
+    }
+
+    // Dead Stock Report
+    public function deadStock(Request $request): JsonResponse
+    {
+        $days = $request->days ?? 30;
+
+        $deadStock = Product::with(['category', 'unit'])
+            ->where('is_active', true)
+            ->where('stock_quantity', '>', 0)
+            ->whereNotIn('id', function ($query) use ($days) {
+                $query->select('product_id')
+                    ->from('sale_items')
+                    ->join('sales', 'sale_items.sale_id', '=', 'sales.id')
+                    ->where('sales.status', 'completed')
+                    ->where('sales.created_at', '>=', now()->subDays($days));
+            })
+            ->get()
+            ->map(function ($product) {
+                $lastSale = DB::table('sale_items')
+                    ->join('sales', 'sale_items.sale_id', '=', 'sales.id')
+                    ->where('sale_items.product_id', $product->id)
+                    ->where('sales.status', 'completed')
+                    ->max('sales.created_at');
+
+                return [
+                    'id'             => $product->id,
+                    'name'           => $product->name,
+                    'category'       => $product->category?->name,
+                    'stock_quantity' => $product->stock_quantity,
+                    'last_sale_date' => $lastSale,
+                    'days_no_sale'   => $lastSale
+                        ? now()->diffInDays($lastSale)
+                        : 'কখনো বিক্রি হয়নি',
+                ];
+            });
+
+        return $this->success([
+            'days_threshold' => $days,
+            'total'          => $deadStock->count(),
+            'products'       => $deadStock,
+        ]);
+    }
+
+    // Expiry Report
+    public function expiry(Request $request): JsonResponse
+    {
+        $days = $request->days ?? 30;
+
+        $expiring = DB::table('product_batches')
+            ->join('products', 'product_batches.product_id', '=', 'products.id')
+            ->where('product_batches.quantity', '>', 0)
+            ->where('product_batches.expiry_date', '<=', now()->addDays($days)->toDateString())
+            ->whereNotNull('product_batches.expiry_date')
+            ->select(
+                'products.id',
+                'products.name',
+                'product_batches.batch_no',
+                'product_batches.quantity',
+                'product_batches.expiry_date'
+            )
+            ->orderBy('product_batches.expiry_date')
+            ->get();
+
+        return $this->success([
+            'days_threshold' => $days,
+            'total'          => $expiring->count(),
+            'products'       => $expiring,
+        ]);
+    }
+
+    // Purchase Report
+    public function purchases(Request $request): JsonResponse
+    {
+        $from = $request->from ?? now()->startOfMonth()->toDateString();
+        $to   = $request->to ?? now()->toDateString();
+
+        $purchases = Purchase::with(['supplier'])
+            ->where('status', 'completed')
+            ->whereBetween('created_at', [$from, $to . ' 23:59:59'])
+            ->orderBy('created_at', 'desc')
+            ->get();
+
+        return $this->success([
+            'summary' => [
+                'total_amount'   => $purchases->sum('total_amount'),
+                'total_paid'     => $purchases->sum('paid_amount'),
+                'total_due'      => $purchases->sum('due_amount'),
+                'purchase_count' => $purchases->count(),
+                'from'           => $from,
+                'to'             => $to,
+            ],
+            'purchases' => $purchases,
+        ]);
+    }
+
+    // Expense Report
+    public function expenses(Request $request): JsonResponse
+    {
+        $from = $request->from ?? now()->startOfMonth()->toDateString();
+        $to   = $request->to ?? now()->toDateString();
+
+        $expenses = Expense::with(['category'])
+            ->whereBetween('expense_date', [$from, $to])
+            ->orderBy('expense_date', 'desc')
+            ->get();
+
+        // Category wise breakdown
+        $categoryBreakdown = $expenses->groupBy('expense_category_id')
+            ->map(function ($items) {
+                return [
+                    'category' => $items->first()->category?->name,
+                    'total'    => $items->sum('amount'),
+                    'count'    => $items->count(),
+                ];
+            })->values();
+
+        return $this->success([
+            'summary' => [
+                'total_expense'    => $expenses->sum('amount'),
+                'expense_count'    => $expenses->count(),
+                'from'             => $from,
+                'to'               => $to,
+            ],
+            'category_breakdown' => $categoryBreakdown,
+            'expenses'           => $expenses,
+        ]);
+    }
+
+    // Customer Due Report
+    public function customerDue(): JsonResponse
+    {
+        $customers = Customer::where('total_due', '>', 0)
+            ->orderBy('total_due', 'desc')
+            ->get(['id', 'name', 'phone', 'total_due']);
+
+        return $this->success([
+            'total_due' => $customers->sum('total_due'),
+            'customers' => $customers,
+        ]);
+    }
+
+    // Supplier Due Report
+    public function supplierDue(): JsonResponse
+    {
+        $suppliers = Supplier::where('total_due', '>', 0)
+            ->orderBy('total_due', 'desc')
+            ->get(['id', 'name', 'phone', 'total_due']);
+
+        return $this->success([
+            'total_due' => $suppliers->sum('total_due'),
+            'suppliers' => $suppliers,
+        ]);
+    }
+
+    // Cashier Performance Report
+    public function cashier(Request $request): JsonResponse
+    {
+        $from = $request->from ?? now()->startOfMonth()->toDateString();
+        $to   = $request->to ?? now()->toDateString();
+
+        $performance = DB::table('sales')
+            ->join('users', 'sales.user_id', '=', 'users.id')
+            ->where('sales.status', 'completed')
+            ->whereBetween('sales.created_at', [$from, $to . ' 23:59:59'])
+            ->selectRaw('
+                users.id,
+                users.name,
+                COUNT(sales.id) as total_sales,
+                SUM(sales.total_amount) as total_amount,
+                SUM(sales.profit) as total_profit
+            ')
+            ->groupBy('users.id', 'users.name')
+            ->orderBy('total_amount', 'desc')
+            ->get();
+
+        return $this->success([
+            'from'        => $from,
+            'to'          => $to,
+            'performance' => $performance,
+        ]);
+    }
+
+    // Sales PDF Export
+    public function salesPdf(Request $request)
+    {
+        $from = $request->from ?? now()->startOfMonth()->toDateString();
+        $to   = $request->to ?? now()->toDateString();
+
+        $sales = Sale::with(['customer'])
+            ->where('status', 'completed')
+            ->whereBetween('created_at', [$from, $to . ' 23:59:59'])
+            ->orderBy('created_at', 'desc')
+            ->get();
+
+        $totalAmount = $sales->sum('total_amount');
+        $totalProfit = $sales->sum('profit');
+
+        $pdf = Pdf::loadView('reports.sales', compact('sales', 'totalAmount', 'totalProfit', 'from', 'to'));
+
+        return $pdf->download('sales-report-' . $from . '-to-' . $to . '.pdf');
+    }
+}

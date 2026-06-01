@@ -22,6 +22,7 @@ use App\Http\Controllers\Api\ExpenseCategoryController;
 use App\Http\Controllers\Api\ExpenseController;
 use App\Http\Controllers\Api\RecurringExpenseController;
 use App\Http\Controllers\Api\ShiftController;
+use App\Http\Controllers\Api\ReportController;
 
 Route::prefix('v1')->group(function () {
 
@@ -108,7 +109,7 @@ Route::prefix('v1')->group(function () {
             // Customer Groups
             Route::apiResource('customer-groups', CustomerGroupController::class);
 
-        // Expense Categories
+            // Expense Categories
             Route::apiResource('expense-categories', ExpenseCategoryController::class);
 
             // Expenses
@@ -123,7 +124,24 @@ Route::prefix('v1')->group(function () {
             Route::post('shifts/close', [ShiftController::class, 'close']);
             Route::get('shifts/current', [ShiftController::class, 'current']);
             Route::post('shifts/cash-in-out', [ShiftController::class, 'cashInOut']);
-            Route::get('shifts/{shift}/summary', [ShiftController::class, 'summary']);    
+            Route::get('shifts/{shift}/summary', [ShiftController::class, 'summary']);  
+            
+            // Reports
+            Route::prefix('reports')->group(function () {
+            Route::get('dashboard', [ReportController::class, 'dashboard']);
+            Route::get('sales', [ReportController::class, 'sales']);
+            Route::get('sales/pdf', [ReportController::class, 'salesPdf']);
+            Route::get('profit', [ReportController::class, 'profit']);
+            Route::get('stock', [ReportController::class, 'stock']);
+            Route::get('stock/valuation', [ReportController::class, 'stockValuation']);
+            Route::get('stock/dead', [ReportController::class, 'deadStock']);
+            Route::get('stock/expiry', [ReportController::class, 'expiry']);
+            Route::get('purchases', [ReportController::class, 'purchases']);
+            Route::get('expenses', [ReportController::class, 'expenses']);
+            Route::get('customers/due', [ReportController::class, 'customerDue']);
+            Route::get('suppliers/due', [ReportController::class, 'supplierDue']);
+            Route::get('cashier', [ReportController::class, 'cashier']);
+                    });
                 
                     });
 
