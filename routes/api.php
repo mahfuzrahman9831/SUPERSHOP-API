@@ -23,6 +23,10 @@ use App\Http\Controllers\Api\ExpenseController;
 use App\Http\Controllers\Api\RecurringExpenseController;
 use App\Http\Controllers\Api\ShiftController;
 use App\Http\Controllers\Api\ReportController;
+use App\Http\Controllers\Api\SettingController;
+use App\Http\Controllers\Api\UserController;
+use App\Http\Controllers\Api\AuditLogController;
+use App\Http\Controllers\Api\PaymentMethodController;
 
 Route::prefix('v1')->group(function () {
 
@@ -142,7 +146,22 @@ Route::prefix('v1')->group(function () {
             Route::get('suppliers/due', [ReportController::class, 'supplierDue']);
             Route::get('cashier', [ReportController::class, 'cashier']);
                     });
+
+            // Settings
+            Route::get('settings', [SettingController::class, 'index']);
+            Route::put('settings', [SettingController::class, 'update']);
+            Route::get('settings/{key}', [SettingController::class, 'show']);
+
+            // Users
+            Route::post('users/{user}/toggle-active', [UserController::class, 'toggleActive']);
+            Route::apiResource('users', UserController::class);
+
+            // Payment Methods
+            Route::apiResource('payment-methods', PaymentMethodController::class);
+
+            // Audit Logs
+            Route::get('audit-logs', [AuditLogController::class, 'index']);        
                 
-                    });
+            });
 
 });
