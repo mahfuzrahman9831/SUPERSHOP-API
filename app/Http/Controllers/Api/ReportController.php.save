@@ -192,51 +192,42 @@ class ReportController extends ApiController
             'total_products' => $products->count(),
             'low_stock'      => $products->where('is_low_stock', true)->count(),
             'out_of_stock'   => $products->where('stock_quantity', 0)->count(),
-            'products'       => $products,
-        ]);
+            'products'       => $products,        ]);
     }
 
     // Stock Valuation
     public function stockValuation(): JsonResponse
-{
-    $layers = ProductStockLayer::with(['product.category', 'product.unit'])
-        ->where('quantity_remaining', '>', 0)
-        ->get()
-        ->groupBy('product_id')
-        ->map(function ($productLayers) {
-            $product = $productLayers->first()->product;
+    {
+        $layers = ProductStockLayer::with(['product.category', 'product.unit'])
+            ->where('quantity_remaining', '>', 0)
+            ->get()
+            ->groupBy('product_id')
+            ->map(function ($productLayers) {
+                $product    = $productLayers->first()->product;
+                $totalValue = $productLayers->sum(fn($l) => $l->quantity_remaining * $l->purchase_price);
+                $totalQty   = $productLayers->sum('quantity_remaining');
 
-            // Product soft-deleted বা না পাওয়া গেলে এই group skip করুন
-            if (!$product) {
-                return null;
-            }
+                return [
+                    'product_id'   => $product->id,
+                    'product_name' => $product->name,
+                    'category'     => $product->category?->name,
+                    'unit'         => $product->unit?->short_name,
+                    'quantity'     => $totalQty,
+                    'stock_value'  => round($totalValue, 2),
+                    'layers'       => $productLayers->map(fn($l) => [
+                        'purchase_price'     => $l->purchase_price,
+                        'quantity_remaining' => $l->quantity_remaining,
+                        'value'              => round($l->quantity_remaining * $l->purchase_price, 2),
+                        'date'               => $l->created_at,
+                    ]),
+                ];
+            })->values();
 
-            $totalValue = $productLayers->sum(fn($l) => $l->quantity_remaining * $l->purchase_price);
-            $totalQty   = $productLayers->sum('quantity_remaining');
-
-            return [
-                'product_id'   => $product->id,
-                'product_name' => $product->name,
-                'category'     => $product->category?->name,
-                'unit'         => $product->unit?->short_name,
-                'quantity'     => $totalQty,
-                'stock_value'  => round($totalValue, 2),
-                'layers'       => $productLayers->map(fn($l) => [
-                    'purchase_price'     => $l->purchase_price,
-                    'quantity_remaining' => $l->quantity_remaining,
-                    'value'              => round($l->quantity_remaining * $l->purchase_price, 2),
-                    'date'               => $l->created_at,
-                ]),
-            ];
-        })
-        ->filter()   // ← null entries বাদ দেয়
-        ->values();
-
-    return $this->success([
-        'total_value' => round($layers->sum('stock_value'), 2),
-        'products'    => $layers,
-    ]);
-}
+        return $this->success([
+            'total_value' => round($layers->sum('stock_value'), 2),
+            'products'    => $layers,
+        ]);
+    }
 
     // Dead Stock Report
     public function deadStock(Request $request): JsonResponse

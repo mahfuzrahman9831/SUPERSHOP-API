@@ -115,7 +115,8 @@ class SaleService
                     ]);
                 }
 
-                // Stock Movement
+                
+              // Stock Movement
                 StockMovement::create([
                     'product_id'       => $itemData['product_id'],
                     'warehouse_id'     => $data['warehouse_id'],
@@ -126,6 +127,9 @@ class SaleService
                     'note'             => "Sale: {$invoiceNo}",
                     'created_by'       => Auth::id(),
                 ]);
+
+                // Product এর cached stock_quantity sync করুন (Products list/POS এর জন্য জরুরি)
+                \App\Models\Product::where('id', $itemData['product_id'])->decrement('stock_quantity', $qty);
             }
 
             // ── Payments ──
